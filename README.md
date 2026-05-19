@@ -1,3 +1,7 @@
+![Python](https://img.shields.io/badge/python-3.10%2B-blue)
+![Status](https://img.shields.io/badge/status-experimental-orange)
+![MCP](https://img.shields.io/badge/MCP-gateway-purple)
+
 # Nexus MCP v0.2.2
 
 Single-gateway MCP facade over local **Mnemo**, **Thrift**, **Agent Governor**, and **Agent Router**.
