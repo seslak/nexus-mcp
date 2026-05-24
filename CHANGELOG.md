@@ -1,5 +1,12 @@
 # Nexus MCP Changelog
 
+## 0.2.3 (2026-05-24)
+
+- Mirrored Thrift economy telemetry for Nexus-routed Thrift calls that bypass Thrift's JSON-RPC dispatcher.
+- Preserved active Nexus run correlation by adding `active_run_id` only to the telemetry mirror arguments, not to the original Thrift call params.
+- Added failure-safe stderr warnings for Thrift telemetry mirror failures.
+- Added focused tests for telemetry mirroring, run-id injection, no double invocation, and failure-safe behavior.
+
 ## 0.2.2 (2026-05-19)
 
 - Added automatic Mnemo `interaction_log` recording from `nexus.finish_interaction`.

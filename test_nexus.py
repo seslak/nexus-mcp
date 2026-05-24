@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import subprocess
@@ -10,7 +11,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 ROOT = Path(__file__).resolve().parent
 SERVER = ROOT / "server.py"
@@ -115,6 +116,105 @@ class DispatchErrorTests(unittest.TestCase):
         self.assertFalse(result["isError"], result)
         mock_router.assert_called_once()
         self.assertEqual(mock_router.call_args.args[0], "validate_workflow_params")
+
+
+class ThriftTelemetryMirrorTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.state_dir = self.root / "state" / "nexus"
+        self.env = patch.dict(
+            os.environ,
+            {
+                "NEXUS_WORKSPACE_ROOT": str(self.root),
+                "NEXUS_STATE_DIR": str(self.state_dir),
+            },
+        )
+        self.env.start()
+        self.addCleanup(self.env.stop)
+        nexus_server._MODULE_CACHE.clear()
+
+    def _fake_thrift_module(
+        self,
+        resolved_action: str,
+        resolved_params: dict[str, object],
+        result: dict[str, object],
+        *,
+        append_side_effect: Exception | None = None,
+    ):
+        mod = type("FakeThriftModule", (), {})()
+        mod.thrift_gateway = Mock(return_value=(resolved_action, resolved_params, result))
+        mod.tool_log_metadata = Mock(return_value=(42, {"target": "x"}))
+        mod.append_economy_log = Mock(side_effect=append_side_effect)
+        return mod
+
+    def test_thrift_call_mirrors_telemetry_and_calls_gateway_once(self):
+        params = {"path": "inbox/iban.php", "start_line": 1, "end_line": 20}
+        resolved_params = dict(params)
+        result = {"content": [{"type": "text", "text": "ok"}], "isError": False}
+        fake_mod = self._fake_thrift_module("file_window", resolved_params, result)
+
+        with patch.object(nexus_server, "_load_module", return_value=fake_mod):
+            out = nexus_server._call_thrift("file_window", params)
+
+        self.assertEqual(out, result)
+        fake_mod.thrift_gateway.assert_called_once_with({"action": "file_window", "params": params})
+        fake_mod.tool_log_metadata.assert_called_once()
+        fake_mod.append_economy_log.assert_called_once()
+
+    def test_active_run_id_is_injected_for_mirror_only(self):
+        nexus_server._save_nexus_state({"active_run_id": "run_123"})
+        params = {"query": "needle"}
+        params_before = dict(params)
+        resolved_params = {"query": "needle"}
+        result = {"content": [{"type": "text", "text": "ok"}], "isError": False}
+        fake_mod = self._fake_thrift_module("search", resolved_params, result)
+
+        with patch.object(nexus_server, "_load_module", return_value=fake_mod):
+            out = nexus_server._call_thrift("search", params)
+
+        self.assertEqual(out, result)
+        self.assertEqual(params, params_before)
+        self.assertNotIn("run_id", resolved_params)
+        mirror_args = fake_mod.append_economy_log.call_args.args[1]
+        self.assertEqual(mirror_args.get("run_id"), "run_123")
+        gateway_payload = fake_mod.thrift_gateway.call_args.args[0]
+        self.assertEqual(gateway_payload["params"], params_before)
+        self.assertNotIn("run_id", gateway_payload["params"])
+
+    def test_telemetry_failure_does_not_break_response(self):
+        params = {"path": "inbox/iban.php"}
+        result = {"content": [{"type": "text", "text": "ok"}], "isError": False}
+        fake_mod = self._fake_thrift_module(
+            "file_window",
+            dict(params),
+            result,
+            append_side_effect=RuntimeError("telemetry write failed"),
+        )
+
+        with (
+            patch.object(nexus_server, "_load_module", return_value=fake_mod),
+            patch("sys.stderr", new_callable=io.StringIO) as stderr,
+        ):
+            out = nexus_server._call_thrift("file_window", params)
+
+        self.assertEqual(out, result)
+        self.assertIn("[nexus] thrift telemetry mirror failed for action=file_window:", stderr.getvalue())
+
+    def test_no_active_run_id_still_writes_telemetry_without_run_id(self):
+        params = {"path": "inbox/iban.php"}
+        resolved_params = dict(params)
+        result = {"content": [{"type": "text", "text": "ok"}], "isError": False}
+        fake_mod = self._fake_thrift_module("file_window", resolved_params, result)
+
+        with patch.object(nexus_server, "_load_module", return_value=fake_mod):
+            out = nexus_server._call_thrift("file_window", params)
+
+        self.assertEqual(out, result)
+        mirror_args = fake_mod.append_economy_log.call_args.args[1]
+        self.assertNotIn("run_id", mirror_args)
+        self.assertEqual(mirror_args["path"], "inbox/iban.php")
 
 
 class StateBackedInteractionTests(unittest.TestCase):
@@ -532,7 +632,7 @@ class MCPServerTests(unittest.TestCase):
         self.assertEqual(self._init_response["result"]["serverInfo"]["name"], "nexus")
 
     def test_initialize_server_version(self):
-        self.assertEqual(self._init_response["result"]["serverInfo"]["version"], "0.2.2")
+        self.assertEqual(self._init_response["result"]["serverInfo"]["version"], "0.2.3")
 
     def test_tools_list_single_nexus_tool(self):
         tools = self._tools_response["result"]["tools"]

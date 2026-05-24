@@ -21,7 +21,7 @@ from typing import Any, Callable
 PROTOCOL_VERSION = "2025-06-18"
 SERVER_NAME = "nexus"
 SERVER_TITLE = "Nexus MCP Gateway"
-SERVER_VERSION = "0.2.2"
+SERVER_VERSION = "0.2.3"
 GATEWAY_TOOL_NAME = "nexus"
 
 PACKAGE_ROOT = Path(__file__).resolve().parent
@@ -247,7 +247,41 @@ def _call_mnemo(action: str, params: dict[str, Any]) -> dict[str, Any]:
 
 def _call_thrift(action: str, params: dict[str, Any]) -> dict[str, Any]:
     mod = _load_module("nexus_component_thrift", _thrift_server_path())
-    _, _, result = mod.thrift_gateway({"action": action, "params": params})
+
+    # Mirror telemetry manually because Nexus calls Thrift via thrift_gateway(...)
+    # directly and bypasses Thrift's JSON-RPC tools/call dispatcher path.
+    # Without this, calls routed through Nexus may never be appended to
+    # state/thrift/thrift.sqlite economy telemetry.
+    resolved_action, resolved_params, result = mod.thrift_gateway({"action": action, "params": params})
+    try:
+        # Forward active Nexus run id only into mirrored telemetry args so Thrift's
+        # event correlation can tie this call to the current interaction run.
+        # Do not inject run_id into the original call params passed to Thrift.
+        active_run_id = ""
+        try:
+            active_run_id = str(_load_nexus_state().get("active_run_id") or "").strip()
+        except Exception:
+            active_run_id = ""
+
+        # Mirror args must be isolated from resolved/original params to avoid
+        # mutating request data just for telemetry enrichment.
+        if isinstance(resolved_params, dict):
+            mirror_args = dict(resolved_params)
+        else:
+            mirror_args = {}
+        if active_run_id and not str(mirror_args.get("run_id", "") or "").strip():
+            mirror_args["run_id"] = active_run_id
+
+        est_tokens, details = mod.tool_log_metadata(resolved_action, mirror_args, result)
+        mod.append_economy_log(resolved_action, mirror_args, est_tokens, details)
+    except Exception as exc:
+        # Telemetry mirror failures must never break tool behavior; return the
+        # original Thrift result and emit only a compact warning to stderr.
+        print(
+            "[nexus] thrift telemetry mirror failed for action={0}: {1}".format(resolved_action, exc),
+            file=sys.stderr,
+        )
+        sys.stderr.flush()
     return result  # type: ignore[return-value]
 
 

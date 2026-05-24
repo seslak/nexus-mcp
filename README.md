@@ -1,4 +1,4 @@
-# Nexus MCP v0.2.2
+# Nexus MCP v0.2.3
 
 Single-gateway MCP facade over local **Mnemo**, **Thrift**, **Agent Governor**, and **Agent Router**.
 
@@ -12,7 +12,7 @@ Use Nexus-native lifecycle actions so Chief does not manually call `governor.rec
 2. backend actions (`thrift.*`, `mnemo.*`, `router.*`)
 3. `nexus.finish_interaction`
 
-While an interaction is active, Nexus middleware auto-records backend tool calls into Governor. On `nexus.finish_interaction`, Nexus also auto-records one Mnemo `interaction_log` for the completed run unless `record_memory=false` is passed or `NEXUS_AUTO_MEMORY=0` is set.
+While an interaction is active, Nexus middleware auto-records backend tool calls into Governor. Nexus also mirrors Thrift economy telemetry for Nexus-routed Thrift calls so they remain visible in Thrift's SQLite economy log even though Nexus calls the in-process `thrift_gateway` directly. On `nexus.finish_interaction`, Nexus auto-records one Mnemo `interaction_log` for the completed run unless `record_memory=false` is passed or `NEXUS_AUTO_MEMORY=0` is set.
 
 ## Actions
 
@@ -75,5 +75,6 @@ Nexus persists interaction state under `state/nexus/nexus_state.json` (or `NEXUS
 ## Notes
 
 - Nexus auto-record middleware never blocks the primary backend action. If auto-record fails, Nexus returns the original result plus `nexus_warnings`.
+- Thrift telemetry mirroring is also failure-safe. If Thrift economy-log mirroring fails, Nexus emits a compact stderr warning and still returns the original Thrift result.
 - `nexus.finish_interaction` records a compact Mnemo `interaction_log` by default. Use `record_memory=false` for smoke tests or throwaway probes.
 - Nexus remains a gateway/adaptor. It does not replace host edit/execute tooling.
