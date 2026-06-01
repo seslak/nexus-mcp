@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 import io
 import json
 import os
@@ -20,6 +21,56 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import server as nexus_server
+
+
+MNEMO_TOPIC_ACTIONS = [
+    "mnemo.topic_add",
+    "mnemo.topic_remove",
+    "mnemo.topic_list",
+]
+
+MNEMO_MEMORY_PACK_ACTIONS = [
+    "mnemo.pack_preview",
+    "mnemo.pack_redaction_preview",
+    "mnemo.pack_export",
+    "mnemo.pack_inspect",
+    "mnemo.pack_import",
+    "mnemo.pack_list_imports",
+    "mnemo.pack_review_import",
+    "mnemo.pack_promote_preview",
+    "mnemo.pack_promote",
+]
+
+MNEMO_SIGNER_ACTIONS = [
+    "mnemo.signer_add",
+    "mnemo.signer_list",
+    "mnemo.signer_disable",
+    "mnemo.signer_enable",
+]
+
+
+def _load_mnemo_gateway_actions_for_drift_test() -> set[str]:
+    candidate_paths = [
+        nexus_server._mnemo_server_path(),
+        ROOT.parent / "mnemo" / "server.py",
+        ROOT.parent / "pub_mnemo" / "server.py",
+    ]
+    target_path = next((path for path in candidate_paths if Path(path).exists()), None)
+    if target_path is None:
+        raise unittest.SkipTest("Mnemo server.py not found for drift test.")
+    target = Path(target_path).resolve()
+    module_dir = str(target.parent)
+    if module_dir not in sys.path:
+        sys.path.insert(0, module_dir)
+    spec = importlib.util.spec_from_file_location("nexus_mnemo_drift_probe", str(target))
+    if spec is None or spec.loader is None:
+        raise unittest.SkipTest(f"Unable to load Mnemo module for drift test: {target}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    gateway_actions = getattr(module, "GATEWAY_ACTIONS", {})
+    if not isinstance(gateway_actions, dict):
+        raise unittest.SkipTest("Mnemo GATEWAY_ACTIONS is unavailable for drift test.")
+    return {str(item).strip() for item in gateway_actions.keys() if str(item).strip()}
 
 
 class NexusActionsTests(unittest.TestCase):
@@ -64,6 +115,64 @@ class NexusActionsTests(unittest.TestCase):
             "mnemo.memory_events",
         ]:
             self.assertIn(action, nexus_server.NEXUS_ACTIONS)
+
+    def test_nexus_exposes_mnemo_memory_pack_actions(self):
+        for action in MNEMO_MEMORY_PACK_ACTIONS:
+            self.assertIn(action, nexus_server.NEXUS_ACTIONS)
+
+    def test_nexus_exposes_mnemo_signer_actions(self):
+        for action in MNEMO_SIGNER_ACTIONS:
+            self.assertIn(action, nexus_server.NEXUS_ACTIONS)
+
+    def test_nexus_exposes_mnemo_topic_actions(self):
+        for action in MNEMO_TOPIC_ACTIONS:
+            self.assertIn(action, nexus_server.NEXUS_ACTIONS)
+
+    def test_nexus_namespace_action_catalogue_no_mnemo_drift(self):
+        mnemo_gateway_actions = _load_mnemo_gateway_actions_for_drift_test()
+        nexus_mnemo_actions = set(nexus_server._NAMESPACE_ACTIONS["mnemo"])
+        missing = sorted(mnemo_gateway_actions - nexus_mnemo_actions)
+        stale = sorted(nexus_mnemo_actions - mnemo_gateway_actions)
+        self.assertEqual(missing, [], f"Nexus missing mnemo actions: {missing}")
+        self.assertEqual(stale, [], f"Nexus has stale mnemo actions: {stale}")
+
+    def test_mnemo_namespace_actions_are_consistent_across_catalog_schema_and_list_actions(self):
+        listed = nexus_server.nexus_gateway({"action": "nexus.list_actions", "params": {}})
+        self.assertFalse(listed["isError"], listed)
+        listed_actions = set(((listed.get("structuredContent") or {}).get("actions") or []))
+        schema_enum = set(nexus_server.TOOLS[0]["inputSchema"]["properties"]["action"]["enum"])
+        for subaction in nexus_server._NAMESPACE_ACTIONS["mnemo"]:
+            fq_action = f"mnemo.{subaction}"
+            self.assertIn(fq_action, nexus_server.NEXUS_ACTIONS)
+            self.assertIn(fq_action, listed_actions)
+            self.assertIn(fq_action, schema_enum)
+
+    def test_memory_pack_actions_present_in_schema_and_list_actions(self):
+        listed = nexus_server.nexus_gateway({"action": "nexus.list_actions", "params": {}})
+        self.assertFalse(listed["isError"], listed)
+        listed_actions = set(((listed.get("structuredContent") or {}).get("actions") or []))
+        schema_enum = set(nexus_server.TOOLS[0]["inputSchema"]["properties"]["action"]["enum"])
+        for action in MNEMO_MEMORY_PACK_ACTIONS:
+            self.assertIn(action, listed_actions)
+            self.assertIn(action, schema_enum)
+
+    def test_signer_actions_present_in_schema_and_list_actions(self):
+        listed = nexus_server.nexus_gateway({"action": "nexus.list_actions", "params": {}})
+        self.assertFalse(listed["isError"], listed)
+        listed_actions = set(((listed.get("structuredContent") or {}).get("actions") or []))
+        schema_enum = set(nexus_server.TOOLS[0]["inputSchema"]["properties"]["action"]["enum"])
+        for action in MNEMO_SIGNER_ACTIONS:
+            self.assertIn(action, listed_actions)
+            self.assertIn(action, schema_enum)
+
+    def test_topic_actions_present_in_schema_and_list_actions(self):
+        listed = nexus_server.nexus_gateway({"action": "nexus.list_actions", "params": {}})
+        self.assertFalse(listed["isError"], listed)
+        listed_actions = set(((listed.get("structuredContent") or {}).get("actions") or []))
+        schema_enum = set(nexus_server.TOOLS[0]["inputSchema"]["properties"]["action"]["enum"])
+        for action in MNEMO_TOPIC_ACTIONS:
+            self.assertIn(action, listed_actions)
+            self.assertIn(action, schema_enum)
 
 
 class DispatchErrorTests(unittest.TestCase):
@@ -116,6 +225,53 @@ class DispatchErrorTests(unittest.TestCase):
         self.assertFalse(result["isError"], result)
         mock_router.assert_called_once()
         self.assertEqual(mock_router.call_args.args[0], "validate_workflow_params")
+
+    def test_nexus_mnemo_pack_preview_dispatches(self):
+        payload = {
+            "content": [{"type": "text", "text": "ok"}],
+            "isError": False,
+            "structuredContent": {"action": "pack_preview", "selected_rows": 0},
+        }
+        with patch.object(nexus_server, "_call_mnemo", return_value=payload) as mock_mnemo:
+            result = nexus_server.nexus_gateway({"action": "mnemo.pack_preview", "params": {}})
+        self.assertFalse(result["isError"], result)
+        mock_mnemo.assert_called_once_with("pack_preview", {})
+
+    def test_nexus_mnemo_pack_inspect_dispatches_to_mnemo_error(self):
+        mnemo_error = {
+            "content": [{"type": "text", "text": "Error: pack_path is required"}],
+            "isError": True,
+            "structuredContent": {"error": "missing_pack_path"},
+        }
+        with patch.object(nexus_server, "_call_mnemo", return_value=mnemo_error) as mock_mnemo:
+            result = nexus_server.nexus_gateway({"action": "mnemo.pack_inspect", "params": {}})
+        self.assertTrue(result["isError"], result)
+        self.assertEqual((result.get("structuredContent") or {}).get("error"), "missing_pack_path")
+        mock_mnemo.assert_called_once_with("pack_inspect", {})
+
+    def test_nexus_mnemo_signer_list_dispatches(self):
+        payload = {
+            "content": [{"type": "text", "text": "ok"}],
+            "isError": False,
+            "structuredContent": {"action": "signer_list", "signers": []},
+        }
+        with patch.object(nexus_server, "_call_mnemo", return_value=payload) as mock_mnemo:
+            result = nexus_server.nexus_gateway({"action": "mnemo.signer_list", "params": {}})
+        self.assertFalse(result["isError"], result)
+        mock_mnemo.assert_called_once_with("signer_list", {})
+
+    def test_all_exposed_mnemo_actions_dispatch_through_namespace_delegate(self):
+        payload = {
+            "content": [{"type": "text", "text": "ok"}],
+            "isError": False,
+            "structuredContent": {"ok": True},
+        }
+        with patch.object(nexus_server, "_call_mnemo", return_value=payload) as mock_mnemo:
+            for subaction in nexus_server._NAMESPACE_ACTIONS["mnemo"]:
+                result = nexus_server.nexus_gateway({"action": f"mnemo.{subaction}", "params": {}})
+                self.assertFalse(result["isError"], f"dispatch failed for mnemo.{subaction}: {result}")
+            called_actions = [call.args[0] for call in mock_mnemo.call_args_list]
+        self.assertEqual(sorted(called_actions), sorted(nexus_server._NAMESPACE_ACTIONS["mnemo"]))
 
 
 class ThriftTelemetryMirrorTests(unittest.TestCase):
@@ -254,11 +410,11 @@ class StateBackedInteractionTests(unittest.TestCase):
             "structuredContent": {"run_id": "run_123", "decision": "continue"},
         }
 
-    def _finish_payload(self):
+    def _finish_payload(self, status: str = "success"):
         return {
             "content": [{"type": "text", "text": "ok"}],
             "isError": False,
-            "structuredContent": {"run_id": "run_123", "status": "success"},
+            "structuredContent": {"run_id": "run_123", "status": status},
         }
 
     def _set_active_state(self):
@@ -345,6 +501,53 @@ class StateBackedInteractionTests(unittest.TestCase):
         result = nexus_server.nexus_gateway({"action": "nexus.finish_interaction", "params": {"status": "success"}})
         self.assertTrue(result["isError"])
         self.assertEqual(result["structuredContent"]["error"], "no_active_interaction")
+
+    def test_finish_interaction_accepts_canonical_statuses(self):
+        for status in sorted(nexus_server._FINISH_STATUS_CANONICAL):
+            self._set_active_state()
+            with patch.object(nexus_server, "_call_governor", return_value=self._finish_payload(status=status)) as mock_governor:
+                result = nexus_server.nexus_gateway(
+                    {
+                        "action": "nexus.finish_interaction",
+                        "params": {"status": status, "result": "done", "record_memory": False},
+                    }
+                )
+            self.assertFalse(result["isError"], result)
+            self.assertEqual(result["structuredContent"]["status"], status)
+            self.assertEqual(mock_governor.call_args.args[0], "finish_run")
+            self.assertEqual(mock_governor.call_args.args[1]["status"], status)
+
+    def test_finish_interaction_legacy_status_synonyms_are_normalized(self):
+        legacy_to_canonical = {
+            "failure": "failed",
+            "blocked": "stopped",
+        }
+        for legacy, canonical in legacy_to_canonical.items():
+            self._set_active_state()
+            with patch.object(nexus_server, "_call_governor", return_value=self._finish_payload(status=canonical)) as mock_governor:
+                result = nexus_server.nexus_gateway(
+                    {
+                        "action": "nexus.finish_interaction",
+                        "params": {"status": legacy, "result": "done", "record_memory": False},
+                    }
+                )
+            self.assertFalse(result["isError"], result)
+            self.assertEqual(result["structuredContent"]["status"], canonical)
+            self.assertEqual(mock_governor.call_args.args[1]["status"], canonical)
+
+    def test_finish_interaction_invalid_status_returns_validation_error(self):
+        self._set_active_state()
+        result = nexus_server.nexus_gateway(
+            {
+                "action": "nexus.finish_interaction",
+                "params": {"status": "not_a_status", "result": "done", "record_memory": False},
+            }
+        )
+        self.assertTrue(result["isError"], result)
+        self.assertEqual(result["structuredContent"]["error"], "invalid_arguments")
+        message = str((result.get("structuredContent") or {}).get("message", ""))
+        self.assertIn("failed", message)
+        self.assertIn("stopped", message)
 
     def test_finish_interaction_record_memory_false_skips_mnemo_write(self):
         self._set_active_state()
@@ -632,7 +835,7 @@ class MCPServerTests(unittest.TestCase):
         self.assertEqual(self._init_response["result"]["serverInfo"]["name"], "nexus")
 
     def test_initialize_server_version(self):
-        self.assertEqual(self._init_response["result"]["serverInfo"]["version"], "0.2.3")
+        self.assertEqual(self._init_response["result"]["serverInfo"]["version"], "0.2.4")
 
     def test_tools_list_single_nexus_tool(self):
         tools = self._tools_response["result"]["tools"]

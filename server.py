@@ -21,14 +21,18 @@ from typing import Any, Callable
 PROTOCOL_VERSION = "2025-06-18"
 SERVER_NAME = "nexus"
 SERVER_TITLE = "Nexus MCP Gateway"
-SERVER_VERSION = "0.2.3"
+SERVER_VERSION = "0.2.4"
 GATEWAY_TOOL_NAME = "nexus"
 
 PACKAGE_ROOT = Path(__file__).resolve().parent
 
 _SHOULD_EXIT = False
 
-_ALLOWED_FINISH_STATUS = {"success", "failure", "abandoned", "blocked"}
+_FINISH_STATUS_CANONICAL = {"success", "failed", "stopped", "abandoned"}
+_FINISH_STATUS_LEGACY_ALIASES = {
+    "failure": "failed",
+    "blocked": "stopped",
+}
 _AUTO_RECORD_NAMESPACES = {"thrift", "mnemo", "router"}
 _AUTO_RECORD_SKIP_ACTIONS = {
     "nexus.doctor",
@@ -112,6 +116,7 @@ _NAMESPACE_ACTIONS: dict[str, list[str]] = {
     ),
     "mnemo": sorted(
         [
+            "alias_hint",
             "backfill_signatures",
             "compact_context",
             "consolidate_full",
@@ -125,6 +130,15 @@ _NAMESPACE_ACTIONS: dict[str, list[str]] = {
             "lookup_symbol",
             "maintenance",
             "memory_events",
+            "pack_export",
+            "pack_import",
+            "pack_inspect",
+            "pack_list_imports",
+            "pack_preview",
+            "pack_promote",
+            "pack_promote_preview",
+            "pack_redaction_preview",
+            "pack_review_import",
             "recent",
             "recent_events",
             "record",
@@ -132,6 +146,13 @@ _NAMESPACE_ACTIONS: dict[str, list[str]] = {
             "salience_check",
             "search",
             "search_events",
+            "signer_add",
+            "signer_disable",
+            "signer_enable",
+            "signer_list",
+            "topic_add",
+            "topic_list",
+            "topic_remove",
             "update",
         ]
     ),
@@ -998,6 +1019,13 @@ def _auto_memory_default_enabled() -> bool:
     return token not in {"0", "false", "no", "n", "off"}
 
 
+def _normalize_finish_status_token(raw_status: str) -> str | None:
+    token = str(raw_status or "").strip().lower()
+    if token in _FINISH_STATUS_CANONICAL:
+        return token
+    return _FINISH_STATUS_LEGACY_ALIASES.get(token)
+
+
 def _build_interaction_summary(status: str, task: str, result: str, event_count: int) -> str:
     head = "[{0}] {1}".format(status, task).strip()
     if not task:
@@ -1012,15 +1040,19 @@ def _handle_finish_interaction(params: dict[str, Any]) -> dict[str, Any]:
         return _error_result("no_active_interaction", "No active interaction to finish.")
 
     try:
-        status = _require_string(params, "status").lower()
+        raw_status = _require_string(params, "status")
         record_memory = _parse_bool_param(params, "record_memory", _auto_memory_default_enabled())
     except ValueError as exc:
         return _error_result("invalid_arguments", str(exc))
-    if status not in _ALLOWED_FINISH_STATUS:
+    normalized_status = _normalize_finish_status_token(raw_status)
+    if normalized_status is None:
         return _error_result(
             "invalid_arguments",
-            "Field 'status' must be one of: {0}.".format(", ".join(sorted(_ALLOWED_FINISH_STATUS))),
+            "Field 'status' must be one of: {0}. Legacy aliases accepted: failure->failed, blocked->stopped.".format(
+                ", ".join(sorted(_FINISH_STATUS_CANONICAL))
+            ),
         )
+    status = normalized_status
     result_summary = _optional_string(params, "result", default="")
 
     task = str(state.get("task") or "")

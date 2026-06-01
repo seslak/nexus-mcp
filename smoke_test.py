@@ -178,7 +178,7 @@ def main() -> int:
                 proc.wait(timeout=5)
 
     assert init["result"]["serverInfo"]["name"] == "nexus"
-    assert init["result"]["serverInfo"]["version"] == "0.2.3"
+    assert init["result"]["serverInfo"]["version"] == "0.2.4"
     assert {tool["name"] for tool in tools_resp["result"]["tools"]} == {"nexus"}
 
     assert started["result"]["isError"] is False, started

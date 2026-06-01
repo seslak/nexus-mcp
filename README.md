@@ -2,7 +2,7 @@
 ![Status](https://img.shields.io/badge/status-experimental-orange)
 ![MCP](https://img.shields.io/badge/MCP-gateway-purple)
 
-# Nexus MCP v0.2.3
+# Nexus MCP v0.2.4
 
 Single-gateway MCP facade over local **Mnemo**, **Thrift**, **Agent Governor**, and **Agent Router**.
 
@@ -28,7 +28,26 @@ All actions use `namespace.subaction`.
 | `router` | `doctor`, `route`, `classify`, `validate_decision`, `list_workflows`, `list_specialists`, `list_models`, `log_decision`, `explain`, `match_workflow`, `get_workflow`, `validate_workflow_params` |
 | `governor` | `doctor`, `version`, `list_profiles`, `start_run`, `record_event`, `record_tool_call`, `record_test`, `patch_check`, `check_budget`, `status`, `finish_run`, `reset_run`, `recent_runs`, `get_run`, `search_runs`, `recent_events`, `search_events`, `get_event`, `maintenance` |
 | `thrift` | `workspace_info`, `find_files`, `grep_text`, `rank_files`, `file_window`, `compress_log`, `count_tokens`, `classify_task`, `cost_report`, `economy_salience_check` |
-| `mnemo` | `record`, `search`, `recall`, `get`, `recent`, `update`, `delete`, `link`, `export`, `inspect`, `maintenance`, `compact_context`, `lookup_symbol`, `salience_check`, `backfill_signatures`, `consolidate_full`, `recent_events`, `search_events`, `get_event`, `memory_events` |
+| `mnemo` | `doctor`, `search`, `record`, `recall`, `get`, `export`, `inspect`, `maintenance`, `recent`, `update`, `delete`, `link`, `alias_hint`, `topic_add`, `topic_remove`, `topic_list`, `pack_preview`, `pack_redaction_preview`, `pack_export`, `pack_inspect`, `pack_import`, `pack_list_imports`, `pack_review_import`, `pack_promote_preview`, `pack_promote`, `signer_add`, `signer_list`, `signer_disable`, `signer_enable`, `compact_context`, `lookup_symbol`, `salience_check`, `backfill_signatures`, `consolidate_full`, `recent_events`, `search_events`, `get_event`, `memory_events` |
+
+## Memory Packs through Nexus
+
+Nexus 0.2.4 exposes Mnemo Memory Packs and signer actions through the normal `mnemo.*` namespace. For example:
+
+```json
+{"action":"mnemo.pack_preview","params":{"topics":["iban-validation"],"limit":20}}
+{"action":"mnemo.pack_export","params":{"pack_name":"iban_knowledge","topics":["iban-validation"],"allow_unsigned":true}}
+{"action":"mnemo.pack_import","params":{"pack_path":"C:/tmp/iban_knowledge.zip","allow_unsigned_quarantine":true}}
+{"action":"mnemo.pack_review_import","params":{"pack_id":"pack_...","include_samples":true}}
+{"action":"mnemo.pack_promote","params":{"pack_id":"pack_...","row_ids":["ctx_001"],"confirm_promote":true}}
+```
+
+Signer and topic actions are exposed the same way:
+
+```json
+{"action":"mnemo.topic_add","params":{"memory_id":"mem_...","topic":"export:my-pack","source":"operator"}}
+{"action":"mnemo.signer_list","params":{}}
+```
 
 ## Usage
 
@@ -36,9 +55,24 @@ All actions use `namespace.subaction`.
 {"action":"nexus.start_interaction","params":{"task":"Update inbox/iban.php to reject BA and GB prefixes.","profile":"small_patch","metadata":{}}}
 {"action":"thrift.file_window","params":{"path":"inbox/iban.php","start_line":1,"end_line":120}}
 {"action":"mnemo.search","params":{"query":"IBAN validation","limit":8}}
+{"action":"mnemo.pack_preview","params":{"topics":["iban-validation"],"limit":20}}
 {"action":"nexus.status","params":{}}
 {"action":"nexus.finish_interaction","params":{"status":"success","result":"Implemented BA/GB prefix reject logic."}}
 ```
+
+### `nexus.finish_interaction` status values
+
+Canonical status values are:
+
+- `success`
+- `failed`
+- `stopped`
+- `abandoned`
+
+For backward compatibility, Nexus also accepts:
+
+- `failure` (normalized to `failed`)
+- `blocked` (normalized to `stopped`)
 
 ## Install / local run
 

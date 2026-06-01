@@ -1,5 +1,23 @@
 # Nexus MCP Changelog
 
+## 0.2.4 (2026-06-01)
+
+- Fixed Mnemo namespace action-catalogue drift in Nexus.
+  - Exposed the full current Mnemo public gateway action surface through Nexus discovery/schema/dispatch.
+  - Added Topics action exposure: `mnemo.topic_add`, `mnemo.topic_remove`, `mnemo.topic_list`.
+  - Added Memory Packs action exposure: `mnemo.pack_preview`, `mnemo.pack_redaction_preview`, `mnemo.pack_export`, `mnemo.pack_inspect`, `mnemo.pack_import`, `mnemo.pack_list_imports`, `mnemo.pack_review_import`, `mnemo.pack_promote_preview`, `mnemo.pack_promote`.
+  - Added signer action exposure: `mnemo.signer_add`, `mnemo.signer_list`, `mnemo.signer_disable`, `mnemo.signer_enable`.
+- Added schema/list_actions/dispatcher consistency tests for Mnemo namespace actions, including pack/signer/topic coverage and a drift guard against Mnemo `GATEWAY_ACTIONS`.
+- Added dispatch smoke tests proving that `mnemo.pack_preview`, `mnemo.pack_inspect`, and signer actions reach Mnemo instead of failing at Nexus enum/action validation.
+- Audited and cleaned `nexus.finish_interaction` status values.
+  - Canonical statuses: `success`, `failed`, `stopped`, `abandoned`.
+  - Legacy aliases remain accepted and normalized: `failure` → `failed`, `blocked` → `stopped`.
+- Performed a deep action-drift scan across Nexus/Mnemo/Router/Governor/Thrift integration surfaces.
+  - Blocking drift found: stale Mnemo action exposure in Nexus.
+  - Blocking drift fixed in this release.
+  - Future optional hardening: derive Nexus namespace catalogues dynamically from component action registries with static fallback.
+
+
 ## 0.2.3 (2026-05-24)
 
 - Mirrored Thrift economy telemetry for Nexus-routed Thrift calls that bypass Thrift's JSON-RPC dispatcher.
