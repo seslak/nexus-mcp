@@ -156,14 +156,22 @@ def main() -> int:
             )
             status_active = call_nexus(proc, 9, "nexus.status")
             gov_recent_events = call_nexus(proc, 10, "governor.recent_events", {"limit": 50})
+            list_actions = call_nexus(proc, 11, "nexus.list_actions")
+            memory_group_discover = call_nexus(
+                proc,
+                12,
+                "mnemo.memory_group_discover",
+                {"limit_groups": 10, "include_samples": True, "sample_per_group": 3},
+            )
+            pack_landing_list = call_nexus(proc, 13, "mnemo.pack_landing_list", {"limit": 10})
             finished = call_nexus(
                 proc,
-                11,
+                14,
                 "nexus.finish_interaction",
                 {"status": "success", "result": "Completed BA/GB prefix rejection."},
             )
-            status_after = call_nexus(proc, 12, "nexus.status")
-            shutdown = rpc(proc, {"jsonrpc": "2.0", "id": 13, "method": "shutdown"})
+            status_after = call_nexus(proc, 15, "nexus.status")
+            shutdown = rpc(proc, {"jsonrpc": "2.0", "id": 16, "method": "shutdown"})
         finally:
             for pipe in (proc.stdin, proc.stdout, proc.stderr):
                 if pipe and not pipe.closed:
@@ -178,8 +186,26 @@ def main() -> int:
                 proc.wait(timeout=5)
 
     assert init["result"]["serverInfo"]["name"] == "nexus"
-    assert init["result"]["serverInfo"]["version"] == "0.2.4"
+    assert init["result"]["serverInfo"]["version"] == "0.2.7"
     assert {tool["name"] for tool in tools_resp["result"]["tools"]} == {"nexus"}
+    schema_enum = set(tools_resp["result"]["tools"][0]["inputSchema"]["properties"]["action"]["enum"])
+    assert "mnemo.memory_group_discover" in schema_enum
+    assert "mnemo.memory_group_preview" in schema_enum
+    assert "mnemo.pack_landing_list" in schema_enum
+
+    assert list_actions["result"]["isError"] is False, list_actions
+    listed_actions = set((list_actions["result"].get("structuredContent") or {}).get("actions", []))
+    assert "mnemo.memory_group_discover" in listed_actions
+    assert "mnemo.memory_group_preview" in listed_actions
+    assert "mnemo.pack_landing_list" in listed_actions
+    assert schema_enum == listed_actions, {"schema_only": sorted(schema_enum - listed_actions), "listed_only": sorted(listed_actions - schema_enum)}
+
+    assert memory_group_discover["result"]["isError"] is False, memory_group_discover
+    mg_sc = memory_group_discover["result"].get("structuredContent") or {}
+    assert str(mg_sc.get("action", "")) == "memory_group_discover"
+    assert pack_landing_list["result"]["isError"] is False, pack_landing_list
+    pl_sc = pack_landing_list["result"].get("structuredContent") or {}
+    assert str(pl_sc.get("action", "")) == "pack_landing_list"
 
     assert started["result"]["isError"] is False, started
     started_sc = started["result"]["structuredContent"]

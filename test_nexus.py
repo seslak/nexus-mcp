@@ -30,6 +30,7 @@ MNEMO_TOPIC_ACTIONS = [
 ]
 
 MNEMO_MEMORY_PACK_ACTIONS = [
+    "mnemo.pack_landing_list",
     "mnemo.pack_preview",
     "mnemo.pack_redaction_preview",
     "mnemo.pack_export",
@@ -39,6 +40,11 @@ MNEMO_MEMORY_PACK_ACTIONS = [
     "mnemo.pack_review_import",
     "mnemo.pack_promote_preview",
     "mnemo.pack_promote",
+]
+
+MNEMO_MEMORY_GROUP_ACTIONS = [
+    "mnemo.memory_group_discover",
+    "mnemo.memory_group_preview",
 ]
 
 MNEMO_SIGNER_ACTIONS = [
@@ -74,6 +80,19 @@ def _load_mnemo_gateway_actions_for_drift_test() -> set[str]:
 
 
 class NexusActionsTests(unittest.TestCase):
+    def test_mcp_schema_enum_contains_mnemo_memory_group_actions(self):
+        schema_enum = set(nexus_server.TOOLS[0]["inputSchema"]["properties"]["action"]["enum"])
+        self.assertIn("mnemo.memory_group_discover", schema_enum)
+        self.assertIn("mnemo.memory_group_preview", schema_enum)
+
+    def test_mcp_schema_enum_matches_nexus_actions(self):
+        schema_enum = set(nexus_server.TOOLS[0]["inputSchema"]["properties"]["action"]["enum"])
+        listed = nexus_server.nexus_gateway({"action": "nexus.list_actions", "params": {}})
+        self.assertFalse(listed["isError"], listed)
+        listed_actions = set(((listed.get("structuredContent") or {}).get("actions") or []))
+        self.assertEqual(schema_enum, set(nexus_server.NEXUS_ACTIONS))
+        self.assertEqual(schema_enum, listed_actions)
+
     def test_all_actions_have_dot(self):
         for action in nexus_server.NEXUS_ACTIONS:
             self.assertIn(".", action, f"Action missing dot: {action}")
@@ -118,6 +137,10 @@ class NexusActionsTests(unittest.TestCase):
 
     def test_nexus_exposes_mnemo_memory_pack_actions(self):
         for action in MNEMO_MEMORY_PACK_ACTIONS:
+            self.assertIn(action, nexus_server.NEXUS_ACTIONS)
+
+    def test_nexus_exposes_mnemo_memory_group_actions(self):
+        for action in MNEMO_MEMORY_GROUP_ACTIONS:
             self.assertIn(action, nexus_server.NEXUS_ACTIONS)
 
     def test_nexus_exposes_mnemo_signer_actions(self):
@@ -173,6 +196,11 @@ class NexusActionsTests(unittest.TestCase):
         for action in MNEMO_TOPIC_ACTIONS:
             self.assertIn(action, listed_actions)
             self.assertIn(action, schema_enum)
+
+    def test_nexus_mnemo_action_drift_guard_includes_memory_group_actions(self):
+        mnemo_gateway_actions = _load_mnemo_gateway_actions_for_drift_test()
+        self.assertIn("memory_group_discover", mnemo_gateway_actions)
+        self.assertIn("memory_group_preview", mnemo_gateway_actions)
 
 
 class DispatchErrorTests(unittest.TestCase):
@@ -237,6 +265,17 @@ class DispatchErrorTests(unittest.TestCase):
         self.assertFalse(result["isError"], result)
         mock_mnemo.assert_called_once_with("pack_preview", {})
 
+    def test_nexus_mnemo_pack_landing_list_dispatches(self):
+        payload = {
+            "content": [{"type": "text", "text": "ok"}],
+            "isError": False,
+            "structuredContent": {"action": "pack_landing_list", "packs": []},
+        }
+        with patch.object(nexus_server, "_call_mnemo", return_value=payload) as mock_mnemo:
+            result = nexus_server.nexus_gateway({"action": "mnemo.pack_landing_list", "params": {"limit": 10}})
+        self.assertFalse(result["isError"], result)
+        mock_mnemo.assert_called_once_with("pack_landing_list", {"limit": 10})
+
     def test_nexus_mnemo_pack_inspect_dispatches_to_mnemo_error(self):
         mnemo_error = {
             "content": [{"type": "text", "text": "Error: pack_path is required"}],
@@ -259,6 +298,70 @@ class DispatchErrorTests(unittest.TestCase):
             result = nexus_server.nexus_gateway({"action": "mnemo.signer_list", "params": {}})
         self.assertFalse(result["isError"], result)
         mock_mnemo.assert_called_once_with("signer_list", {})
+
+    def test_nexus_dispatches_mnemo_memory_group_discover(self):
+        payload = {
+            "content": [{"type": "text", "text": "ok"}],
+            "isError": False,
+            "structuredContent": {"action": "memory_group_discover", "groups": []},
+        }
+        with patch.object(nexus_server, "_call_mnemo", return_value=payload) as mock_mnemo:
+            result = nexus_server.nexus_gateway({"action": "mnemo.memory_group_discover", "params": {}})
+        self.assertFalse(result["isError"], result)
+        mock_mnemo.assert_called_once_with("memory_group_discover", {})
+
+    def test_tools_call_accepts_mnemo_memory_group_discover(self):
+        payload = {
+            "content": [{"type": "text", "text": "ok"}],
+            "isError": False,
+            "structuredContent": {"action": "memory_group_discover", "groups": []},
+        }
+        request = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "nexus",
+                "arguments": {
+                    "action": "mnemo.memory_group_discover",
+                    "params": {"limit_groups": 10, "include_samples": True, "sample_per_group": 3},
+                },
+            },
+        }
+        with patch.object(nexus_server, "_call_mnemo", return_value=payload) as mock_mnemo:
+            with patch.object(nexus_server, "_send") as mock_send:
+                nexus_server.handle_request(request)
+        mock_mnemo.assert_called_once_with(
+            "memory_group_discover",
+            {"limit_groups": 10, "include_samples": True, "sample_per_group": 3},
+        )
+        sent = mock_send.call_args.args[0]
+        self.assertEqual(sent["id"], 1)
+        self.assertFalse(sent["result"]["isError"], sent)
+
+    def test_tools_call_accepts_mnemo_memory_group_preview_validation_path(self):
+        mnemo_error = {
+            "content": [{"type": "text", "text": "Error: group_id is required"}],
+            "isError": True,
+            "structuredContent": {"error": "missing_group_id", "message": "group_id is required"},
+        }
+        request = {
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {
+                "name": "nexus",
+                "arguments": {"action": "mnemo.memory_group_preview", "params": {}},
+            },
+        }
+        with patch.object(nexus_server, "_call_mnemo", return_value=mnemo_error) as mock_mnemo:
+            with patch.object(nexus_server, "_send") as mock_send:
+                nexus_server.handle_request(request)
+        mock_mnemo.assert_called_once_with("memory_group_preview", {})
+        sent = mock_send.call_args.args[0]
+        self.assertEqual(sent["id"], 2)
+        self.assertTrue(sent["result"]["isError"], sent)
+        self.assertEqual((sent["result"].get("structuredContent") or {}).get("error"), "missing_group_id")
 
     def test_all_exposed_mnemo_actions_dispatch_through_namespace_delegate(self):
         payload = {
@@ -783,6 +886,14 @@ class ToolSchemaTests(unittest.TestCase):
         enum_values = schema["properties"]["action"]["enum"]
         self.assertEqual(sorted(enum_values), sorted(nexus_server.NEXUS_ACTIONS))
 
+    def test_nexus_list_actions_and_schema_are_consistent_after_import(self):
+        listed = nexus_server.nexus_gateway({"action": "nexus.list_actions", "params": {}})
+        self.assertFalse(listed["isError"], listed)
+        listed_actions = ((listed.get("structuredContent") or {}).get("actions") or [])
+        schema_enum = nexus_server.TOOLS[0]["inputSchema"]["properties"]["action"]["enum"]
+        self.assertEqual(listed_actions, nexus_server.NEXUS_ACTIONS)
+        self.assertEqual(schema_enum, nexus_server.NEXUS_ACTIONS)
+
 
 class MCPServerTests(unittest.TestCase):
     @classmethod
@@ -835,7 +946,7 @@ class MCPServerTests(unittest.TestCase):
         self.assertEqual(self._init_response["result"]["serverInfo"]["name"], "nexus")
 
     def test_initialize_server_version(self):
-        self.assertEqual(self._init_response["result"]["serverInfo"]["version"], "0.2.4")
+        self.assertEqual(self._init_response["result"]["serverInfo"]["version"], "0.2.7")
 
     def test_tools_list_single_nexus_tool(self):
         tools = self._tools_response["result"]["tools"]
@@ -846,6 +957,12 @@ class MCPServerTests(unittest.TestCase):
         schema = tools[0]["inputSchema"]
         self.assertEqual(schema["type"], "object")
         self.assertIn("action", schema["required"])
+
+    def test_tools_list_schema_contains_mnemo_memory_group_actions(self):
+        tools = self._tools_response["result"]["tools"]
+        schema_enum = set(tools[0]["inputSchema"]["properties"]["action"]["enum"])
+        self.assertIn("mnemo.memory_group_discover", schema_enum)
+        self.assertIn("mnemo.memory_group_preview", schema_enum)
 
 
 if __name__ == "__main__":

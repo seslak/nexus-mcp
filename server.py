@@ -21,7 +21,7 @@ from typing import Any, Callable
 PROTOCOL_VERSION = "2025-06-18"
 SERVER_NAME = "nexus"
 SERVER_TITLE = "Nexus MCP Gateway"
-SERVER_VERSION = "0.2.4"
+SERVER_VERSION = "0.2.7"
 GATEWAY_TOOL_NAME = "nexus"
 
 PACKAGE_ROOT = Path(__file__).resolve().parent
@@ -130,6 +130,9 @@ _NAMESPACE_ACTIONS: dict[str, list[str]] = {
             "lookup_symbol",
             "maintenance",
             "memory_events",
+            "memory_group_discover",
+            "memory_group_preview",
+            "pack_landing_list",
             "pack_export",
             "pack_import",
             "pack_inspect",
@@ -163,6 +166,49 @@ NEXUS_ACTIONS: list[str] = sorted(
     for ns, actions in _NAMESPACE_ACTIONS.items()
     for action in actions
 )
+
+
+def _public_action_enum() -> list[str]:
+    """Single source for the public Nexus MCP action enum."""
+    return list(NEXUS_ACTIONS)
+
+
+def _build_tools() -> list[dict[str, Any]]:
+    return [
+        {
+            "name": GATEWAY_TOOL_NAME,
+            "title": SERVER_TITLE,
+            "description": (
+                "Nexus MCP: single gateway over Mnemo, Thrift, Agent Governor, and Agent Router. "
+                "Use action in 'namespace.subaction' format with optional params. "
+                "Use nexus.start_interaction / nexus.status / nexus.finish_interaction for active-run middleware recording."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": _public_action_enum(),
+                        "description": (
+                            "Required action in 'namespace.subaction' format. "
+                            "nexus.start_interaction starts governor run + middleware state; "
+                            "nexus.status reports active interaction; "
+                            "nexus.finish_interaction finishes active run."
+                        ),
+                    },
+                    "params": {
+                        "type": "object",
+                        "description": (
+                            "Optional action parameters. Pass the same params expected by the "
+                            "underlying namespace action."
+                        ),
+                    },
+                },
+                "required": ["action"],
+                "additionalProperties": False,
+            },
+        },
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -1254,41 +1300,7 @@ def nexus_gateway(args: dict[str, Any]) -> dict[str, Any]:
 # MCP tool definition (Copilot-safe schema)
 # ---------------------------------------------------------------------------
 
-TOOLS = [
-    {
-        "name": GATEWAY_TOOL_NAME,
-        "title": SERVER_TITLE,
-        "description": (
-            "Nexus MCP: single gateway over Mnemo, Thrift, Agent Governor, and Agent Router. "
-            "Use action in 'namespace.subaction' format with optional params. "
-            "Use nexus.start_interaction / nexus.status / nexus.finish_interaction for active-run middleware recording."
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "action": {
-                    "type": "string",
-                    "enum": NEXUS_ACTIONS,
-                    "description": (
-                        "Required action in 'namespace.subaction' format. "
-                        "nexus.start_interaction starts governor run + middleware state; "
-                        "nexus.status reports active interaction; "
-                        "nexus.finish_interaction finishes active run."
-                    ),
-                },
-                "params": {
-                    "type": "object",
-                    "description": (
-                        "Optional action parameters. Pass the same params expected by the "
-                        "underlying namespace action."
-                    ),
-                },
-            },
-            "required": ["action"],
-            "additionalProperties": False,
-        },
-    },
-]
+TOOLS = _build_tools()
 
 
 # ---------------------------------------------------------------------------
