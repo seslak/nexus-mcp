@@ -39,7 +39,7 @@ All actions use `namespace.subaction`.
 {"action":"mnemo.pack_preview","params":{"topics":["iban-validation"],"limit":20}}
 {"action":"mnemo.pack_export","params":{"pack_name":"iban_knowledge","topics":["iban-validation"],"allow_unsigned":true}}
 {"action":"mnemo.pack_landing_list","params":{"limit":10}}
-{"action":"mnemo.pack_import","params":{"pack_path":"C:/tmp/iban_knowledge.zip","allow_unsigned_quarantine":true}}
+{"action":"mnemo.pack_import","params":{"pack_path":"C:/tmp/iban_knowledge.mem","allow_unsigned_quarantine":true}}
 {"action":"mnemo.pack_review_import","params":{"pack_id":"pack_...","include_samples":true}}
 {"action":"mnemo.pack_promote","params":{"pack_id":"pack_...","row_ids":["ctx_001"],"confirm_promote":true}}
 {"action":"mnemo.memory_group_discover","params":{"query":"memory packs","limit_groups":10}}
@@ -61,6 +61,16 @@ For backward compatibility, Nexus also accepts:
 
 - `failure` (normalized to `failed`)
 - `blocked` (normalized to `stopped`)
+
+## Prompt workflows
+
+Nexus includes VS Code/Copilot prompt workflows for Mnemo Memory Packs under `.github/prompts/`:
+
+- `mnemo.memory-pack-export.prompt.md`
+- `mnemo.memory-pack-import.prompt.md`
+- `mnemo.memory-pack-promote.prompt.md`
+
+These prompts are release artifacts for guided Memory Pack export, import, and promotion through Nexus-routed Mnemo actions.
 
 ## Install / local run
 

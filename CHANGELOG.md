@@ -4,6 +4,7 @@
 
 - Exposed new Mnemo read-only import-UX action through Nexus:
   - `mnemo.pack_landing_list`
+- Added GitHub prompt workflow artifacts for Mnemo Memory Pack export, import, and promotion under `.github/prompts/`.
 - Updated public action catalogue, MCP schema enum, list-actions output, dispatch tests, and smoke coverage for the new Mnemo action.
 - No Nexus feature redesign beyond Mnemo action exposure.
 - No schema changes.
