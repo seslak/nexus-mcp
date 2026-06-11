@@ -2,7 +2,7 @@
 ![Status](https://img.shields.io/badge/status-experimental-orange)
 ![MCP](https://img.shields.io/badge/MCP-gateway-purple)
 
-# Nexus MCP v0.2.7
+# Nexus MCP v0.3.1
 
 Single-gateway MCP facade over local **Mnemo**, **Thrift**, **Agent Governor**, and **Agent Router**.
 
@@ -16,7 +16,9 @@ Use Nexus-native lifecycle actions so Chief does not manually call `governor.rec
 2. backend actions (`thrift.*`, `mnemo.*`, `router.*`)
 3. `nexus.finish_interaction`
 
-While an interaction is active, Nexus middleware auto-records backend tool calls into Governor. Nexus also mirrors Thrift economy telemetry for Nexus-routed Thrift calls so they remain visible in Thrift's SQLite economy log even though Nexus calls the in-process `thrift_gateway` directly. On `nexus.finish_interaction`, Nexus auto-records one Mnemo `interaction_log` for the completed run unless `record_memory=false` is passed or `NEXUS_AUTO_MEMORY=0` is set.
+While an interaction is active, Nexus middleware auto-records backend tool calls into Governor. Nexus also mirrors Thrift economy telemetry for Nexus-routed Thrift calls and captures the mirrored `content_hash` so later `governor.sync_thrift` imports can skip Nexus-mirrored duplicates. On `nexus.finish_interaction`, Nexus auto-records one Mnemo `interaction_log` for the completed run unless `record_memory=false` is passed or `NEXUS_AUTO_MEMORY=0` is set.
+
+`nexus.finish_interaction` now self-heals stale Governor `run_not_active` responses by synchronizing the Nexus active-run state. Backend diagnostic/probe actions that should not count as progress are skipped by auto-recording.
 
 ## Actions
 
@@ -24,11 +26,13 @@ All actions use `namespace.subaction`.
 
 | Namespace | Actions |
 |---|---|
-| `nexus` | `doctor`, `status`, `list_actions`, `help`, `start_interaction`, `finish_interaction` (`list_namespaces` alias kept) |
-| `router` | `doctor`, `route`, `classify`, `validate_decision`, `list_workflows`, `list_specialists`, `list_models`, `log_decision`, `explain`, `match_workflow`, `get_workflow`, `validate_workflow_params` |
-| `governor` | `doctor`, `version`, `list_profiles`, `start_run`, `record_event`, `record_tool_call`, `record_test`, `patch_check`, `check_budget`, `status`, `finish_run`, `reset_run`, `recent_runs`, `get_run`, `search_runs`, `recent_events`, `search_events`, `get_event`, `maintenance` |
-| `thrift` | `workspace_info`, `find_files`, `grep_text`, `rank_files`, `file_window`, `compress_log`, `count_tokens`, `classify_task`, `cost_report`, `economy_salience_check` |
-| `mnemo` | `doctor`, `search`, `record`, `recall`, `get`, `export`, `inspect`, `maintenance`, `recent`, `update`, `delete`, `link`, `alias_hint`, `topic_add`, `topic_remove`, `topic_list`, `pack_landing_list`, `pack_preview`, `pack_redaction_preview`, `pack_export`, `pack_inspect`, `pack_import`, `pack_list_imports`, `pack_review_import`, `pack_promote_preview`, `pack_promote`, `memory_group_discover`, `memory_group_preview`, `signer_add`, `signer_list`, `signer_disable`, `signer_enable`, `compact_context`, `lookup_symbol`, `salience_check`, `backfill_signatures`, `consolidate_full`, `recent_events`, `search_events`, `get_event`, `memory_events` |
+| `nexus` | `doctor`, `finish_interaction`, `help`, `list_actions`, `list_namespaces`, `reset_interaction`, `start_interaction`, `status` |
+| `router` | `classify`, `doctor`, `explain`, `get_workflow`, `list_models`, `list_specialists`, `list_workflows`, `log_decision`, `log_outcome`, `match_workflow`, `recent_decisions`, `reload_registries`, `route`, `suggest_workflow`, `validate_decision`, `validate_registries`, `validate_workflow_params` |
+| `governor` | `check_budget`, `doctor`, `finish_run`, `get_event`, `get_run`, `list_profiles`, `maintenance`, `patch_check`, `recent_events`, `recent_runs`, `record_event`, `record_test`, `record_tool_call`, `reset_run`, `search_events`, `search_runs`, `start_run`, `stats`, `status`, `sync_thrift`, `version` |
+| `thrift` | `classify_task`, `compress_log`, `cost_report`, `count_tokens`, `economy_salience_check`, `file_window`, `find_files`, `grep_text`, `plan_context`, `rank_files`, `workspace_info` |
+| `mnemo` | `alias_hint`, `backfill_signatures`, `compact_context`, `consolidate_full`, `delete`, `doctor`, `export`, `get`, `get_event`, `inspect`, `link`, `lookup_symbol`, `maintenance`, `memory_events`, `memory_group_discover`, `memory_group_preview`, `pack_export`, `pack_import`, `pack_inspect`, `pack_landing_list`, `pack_list_imports`, `pack_preview`, `pack_promote`, `pack_promote_preview`, `pack_redaction_preview`, `pack_review_import`, `recall`, `recent`, `recent_events`, `record`, `salience_check`, `search`, `search_events`, `signer_add`, `signer_disable`, `signer_enable`, `signer_list`, `topic_add`, `topic_list`, `topic_remove`, `update` |
+
+`nexus.list_namespaces` is kept as a compatibility alias for action discovery.
 
 ## Usage
 
@@ -47,6 +51,8 @@ All actions use `namespace.subaction`.
 {"action":"nexus.status","params":{}}
 {"action":"nexus.finish_interaction","params":{"status":"success","result":"Implemented BA/GB prefix reject logic."}}
 ```
+
+`nexus.status` is read-only. It passes `record_check=false` through to Governor, so repeated status polling does not mutate Governor decision state or trigger no-progress escalation.
 
 ### `nexus.finish_interaction` status values
 
@@ -97,6 +103,8 @@ Set in the Nexus server process env (usually `agentic/.vscode/mcp.json`):
 
 Component env vars are still read directly by those component servers when Nexus imports and calls them.
 
+If `AGENT_SUITE_SESSION_ID` is set and `THRIFT_SESSION_ID` is unset, Nexus bridges the suite id into Thrift at startup so all components share the same session stamp.
+
 ## State
 
 Nexus persists interaction state under `state/nexus/nexus_state.json` (or `NEXUS_STATE_DIR`):
@@ -108,10 +116,25 @@ Nexus persists interaction state under `state/nexus/nexus_state.json` (or `NEXUS
 - `last_action_at`
 - `middleware_event_count`
 
+State writes are atomic and should not leave temporary save files after successful saves.
+
+## Protocol compatibility
+
+Nexus supports protocol negotiation for these MCP protocol versions:
+
+- `2025-06-18`
+- `2025-03-26`
+- `2024-11-05`
+
+The server also supports JSON-RPC `ping`.
+
 ## Notes
 
 - Nexus auto-record middleware never blocks the primary backend action. If auto-record fails, Nexus returns the original result plus `nexus_warnings`.
-- Thrift telemetry mirroring is also failure-safe. If Thrift economy-log mirroring fails, Nexus emits a compact stderr warning and still returns the original Thrift result.
+- `nexus.reset_interaction` requires `confirm=true`. Use `abandon_run=true` to also call Governor `reset_run`.
+- If the orchestrator stores routing metadata in `start_interaction.metadata` with `decision_id`, Nexus logs a Router outcome on finish. `selection_rank > 1` is treated as `overridden`; otherwise `followed`.
+- Telemetry integrity: Nexus captures Thrift's mirrored `content_hash`, forwards it as Governor `record_tool_call.input_hash`, and later `governor.sync_thrift` skips those duplicates instead of double-counting them.
 - `nexus.finish_interaction` records a compact Mnemo `interaction_log` by default. Use `record_memory=false` for smoke tests or throwaway probes.
+- Nexus diagnostics include root-consistency and duplicate-module-name checks.
 - Nexus remains a gateway/adaptor. It does not replace host edit/execute tooling.
 - After changing the Nexus MCP action schema/enum, schema-aware clients such as VS Code/Copilot may need an MCP server restart or window reload to refresh cached tool schemas.

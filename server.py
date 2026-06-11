@@ -14,14 +14,17 @@ import json
 import os
 import sys
 import time
+import uuid
+from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
 PROTOCOL_VERSION = "2025-06-18"
+SUPPORTED_PROTOCOL_VERSIONS = {"2025-06-18", "2025-03-26", "2024-11-05"}
 SERVER_NAME = "nexus"
 SERVER_TITLE = "Nexus MCP Gateway"
-SERVER_VERSION = "0.2.7"
+SERVER_VERSION = "0.3.1"
 GATEWAY_TOOL_NAME = "nexus"
 
 PACKAGE_ROOT = Path(__file__).resolve().parent
@@ -35,14 +38,13 @@ _FINISH_STATUS_LEGACY_ALIASES = {
 }
 _AUTO_RECORD_NAMESPACES = {"thrift", "mnemo", "router"}
 _AUTO_RECORD_SKIP_ACTIONS = {
-    "nexus.doctor",
-    "nexus.help",
-    "nexus.list_actions",
-    "nexus.status",
-    "nexus.start_interaction",
-    "nexus.finish_interaction",
-    "governor.record_tool_call",
+    "thrift.cost_report",
+    "thrift.economy_salience_check",
+    "mnemo.doctor",
+    "mnemo.salience_check",
+    "router.doctor",
 }
+_LAST_THRIFT_MIRROR_HASH: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -57,6 +59,7 @@ _NAMESPACE_ACTIONS: dict[str, list[str]] = {
             "help",
             "list_actions",
             "list_namespaces",
+            "reset_interaction",
             "start_interaction",
             "status",
         ]
@@ -71,9 +74,14 @@ _NAMESPACE_ACTIONS: dict[str, list[str]] = {
             "list_specialists",
             "list_workflows",
             "log_decision",
+            "log_outcome",
             "match_workflow",
+            "recent_decisions",
+            "reload_registries",
             "route",
+            "suggest_workflow",
             "validate_decision",
+            "validate_registries",
             "validate_workflow_params",
         ]
     ),
@@ -96,7 +104,9 @@ _NAMESPACE_ACTIONS: dict[str, list[str]] = {
             "search_events",
             "search_runs",
             "start_run",
+            "stats",
             "status",
+            "sync_thrift",
             "version",
         ]
     ),
@@ -110,6 +120,7 @@ _NAMESPACE_ACTIONS: dict[str, list[str]] = {
             "file_window",
             "find_files",
             "grep_text",
+            "plan_context",
             "rank_files",
             "workspace_info",
         ]
@@ -313,7 +324,9 @@ def _call_mnemo(action: str, params: dict[str, Any]) -> dict[str, Any]:
 
 
 def _call_thrift(action: str, params: dict[str, Any]) -> dict[str, Any]:
+    global _LAST_THRIFT_MIRROR_HASH
     mod = _load_module("nexus_component_thrift", _thrift_server_path())
+    _LAST_THRIFT_MIRROR_HASH = None
 
     # Mirror telemetry manually because Nexus calls Thrift via thrift_gateway(...)
     # directly and bypasses Thrift's JSON-RPC tools/call dispatcher path.
@@ -340,8 +353,12 @@ def _call_thrift(action: str, params: dict[str, Any]) -> dict[str, Any]:
             mirror_args["run_id"] = active_run_id
 
         est_tokens, details = mod.tool_log_metadata(resolved_action, mirror_args, result)
-        mod.append_economy_log(resolved_action, mirror_args, est_tokens, details)
+        mirrored = mod.append_economy_log(resolved_action, mirror_args, est_tokens, details)
+        if isinstance(mirrored, dict):
+            content_hash = str(mirrored.get("content_hash", "")).strip()
+            _LAST_THRIFT_MIRROR_HASH = content_hash or None
     except Exception as exc:
+        _LAST_THRIFT_MIRROR_HASH = None
         # Telemetry mirror failures must never break tool behavior; return the
         # original Thrift result and emit only a compact warning to stderr.
         print(
@@ -390,11 +407,11 @@ def _delegate_router(subaction: str, params: dict[str, Any]) -> dict[str, Any]:
                 or str(routed_params.get("query", "")).strip()
             )
             routed_params["task"] = "Match workflow {0}".format(wf_name or "for current task")
-        routed = _call_router("route", routed_params)
+        routed = _call_router("suggest_workflow", routed_params)
         if isinstance(routed, dict):
             structured = routed.get("structuredContent")
             if isinstance(structured, dict):
-                structured.setdefault("nexus_alias", "router.match_workflow -> router.route")
+                structured.setdefault("nexus_alias", "router.match_workflow -> router.suggest_workflow")
         return routed
 
     if subaction == "get_workflow":
@@ -513,7 +530,9 @@ def _save_nexus_state(state: dict[str, Any]) -> None:
     path = _state_file()
     path.parent.mkdir(parents=True, exist_ok=True)
     normalized = _normalize_state(state)
-    path.write_text(json.dumps(normalized, indent=2, ensure_ascii=False), encoding="utf-8")
+    tmp_path = path.with_name(path.name + ".tmp-" + uuid.uuid4().hex)
+    tmp_path.write_text(json.dumps(normalized, indent=2, ensure_ascii=False), encoding="utf-8")
+    os.replace(tmp_path, path)
 
 
 def _clear_active_interaction(state: dict[str, Any]) -> dict[str, Any]:
@@ -715,9 +734,10 @@ def _result_summary(namespace: str, action: str, result: dict[str, Any]) -> str:
         if route_type or task_class:
             return "router route={0} class={1}".format(route_type or "n/a", task_class or "n/a")
     if namespace == "thrift" and action == "file_window":
-        lines = structured.get("lines")
-        if isinstance(lines, list):
-            return "thrift.file_window returned {0} line(s)".format(len(lines))
+        start_line = structured.get("start_line")
+        end_line = structured.get("end_line")
+        if start_line is not None and end_line is not None:
+            return "thrift.file_window returned lines {0}-{1}".format(start_line, end_line)
     keys = sorted(structured.keys())
     if keys:
         return "ok ({0})".format(",".join(keys[:6]))
@@ -760,6 +780,7 @@ def _auto_record_to_governor(
     duration_ms: int,
     state: dict[str, Any],
 ) -> str | None:
+    global _LAST_THRIFT_MIRROR_HASH
     info = _extract_target_info(namespace, subaction, params, result)
     success = not bool(result.get("isError"))
     params_summary = _json_compact(params, max_chars=480)
@@ -795,14 +816,23 @@ def _auto_record_to_governor(
         "success": success,
         "tokens": est_tokens,
         "detail": _json_compact(detail_payload, max_chars=1200),
+        "run_id": state.get("active_run_id"),
     }
+    if namespace == "thrift" and _LAST_THRIFT_MIRROR_HASH:
+        record_params["input_hash"] = _LAST_THRIFT_MIRROR_HASH
     try:
         governor_result = _call_governor("record_tool_call", record_params)
     except Exception as exc:
+        if namespace == "thrift":
+            _LAST_THRIFT_MIRROR_HASH = None
         return "Nexus middleware failed to auto-record {0}.{1}: {2}".format(namespace, subaction, exc)
     if not isinstance(governor_result, dict):
+        if namespace == "thrift":
+            _LAST_THRIFT_MIRROR_HASH = None
         return "Nexus middleware failed to auto-record {0}.{1}: invalid governor response.".format(namespace, subaction)
     if bool(governor_result.get("isError")):
+        if namespace == "thrift":
+            _LAST_THRIFT_MIRROR_HASH = None
         return "Nexus middleware failed to auto-record {0}.{1}: {2}".format(
             namespace,
             subaction,
@@ -810,7 +840,8 @@ def _auto_record_to_governor(
         )
     state["middleware_event_count"] = int(state.get("middleware_event_count", 0) or 0) + 1
     state["last_action_at"] = _utc_now_iso()
-    _save_nexus_state(state)
+    if namespace == "thrift":
+        _LAST_THRIFT_MIRROR_HASH = None
     return None
 
 
@@ -905,20 +936,79 @@ def _component_status() -> dict[str, Any]:
     return components
 
 
+def _component_root_snapshot() -> dict[str, dict[str, str | None]]:
+    configured_thrift = os.environ.get("THRIFT_WORKSPACE_ROOT", "").strip()
+    configured_governor = os.environ.get("AGENT_GOVERNOR_ROOT", "").strip()
+    configured_router = os.environ.get("AGENT_ROUTER_WORKSPACE_ROOT", "").strip()
+    return {
+        "nexus": {
+            "configured": os.environ.get("NEXUS_WORKSPACE_ROOT", "").strip() or None,
+            "effective": str(_workspace_root().resolve()),
+        },
+        "thrift": {
+            "configured": configured_thrift or None,
+            "effective": str(Path(configured_thrift).resolve()) if configured_thrift else str(Path.cwd().resolve()),
+        },
+        "governor": {
+            "configured": configured_governor or None,
+            "effective": str(Path(configured_governor).resolve()) if configured_governor else str(Path.cwd().resolve()),
+        },
+        "router": {
+            "configured": configured_router or None,
+            "effective": str(Path(configured_router).resolve()) if configured_router else str(Path.cwd().resolve()),
+        },
+    }
+
+
+def _root_consistency_warnings(roots: dict[str, dict[str, str | None]]) -> list[str]:
+    warnings: list[str] = []
+    nexus_configured = roots.get("nexus", {}).get("configured")
+    nexus_effective = roots.get("nexus", {}).get("effective")
+    if not nexus_effective:
+        return warnings
+    for name in ("thrift", "governor", "router"):
+        entry = roots.get(name, {})
+        configured = entry.get("configured")
+        effective = entry.get("effective")
+        if nexus_configured and not configured:
+            warnings.append("{0} workspace root is unset while NEXUS_WORKSPACE_ROOT is set.".format(name))
+        if effective and effective != nexus_effective:
+            warnings.append("{0} workspace root mismatch: {1}".format(name, effective))
+    return warnings
+
+
+def _duplicate_top_level_module_names() -> list[str]:
+    names: list[str] = []
+    ignored = {"__init__.py", "server.py", "mcp_server.py", "smoke_test.py", "test_server.py", "salience_loader.py"}
+    for path_fn in (_router_server_path, _mnemo_server_path, _thrift_server_path, _governor_server_path):
+        directory = path_fn().resolve().parent
+        if not directory.exists():
+            continue
+        for file_path in directory.glob("*.py"):
+            if file_path.name in ignored:
+                continue
+            names.append(file_path.name)
+    counts = Counter(names)
+    return sorted(name for name, count in counts.items() if count > 1)
+
+
 def _handle_status(params: dict[str, Any]) -> dict[str, Any]:
     del params
     components = _component_status()
     workspace = _workspace_root()
     missing = [ns for ns, info in components.items() if not info["server_exists"]]
     state = _load_nexus_state()
+    roots = _component_root_snapshot()
     warnings = [f"Missing server file for: {ns}" for ns in missing]
+    warnings.extend(_root_consistency_warnings(roots))
+    duplicate_module_names = _duplicate_top_level_module_names()
+    if duplicate_module_names:
+        warnings.append("Duplicate top-level module names detected: {0}".format(", ".join(duplicate_module_names)))
     governor_status: dict[str, Any] | None = None
 
     if _interaction_is_active(state):
-        state["last_action_at"] = _utc_now_iso()
-        _save_nexus_state(state)
         try:
-            governor_result = _call_governor("status", {})
+            governor_result = _call_governor("status", {"run_id": state.get("active_run_id"), "record_check": False})
             if isinstance(governor_result, dict) and not bool(governor_result.get("isError")):
                 governor_status = _structured_content(governor_result)
             else:
@@ -947,12 +1037,14 @@ def _handle_status(params: dict[str, Any]) -> dict[str, Any]:
         "namespaces": list(_NAMESPACE_ACTIONS.keys()),
         "total_actions": len(NEXUS_ACTIONS),
         "components": components,
+        "roots": roots,
         "active_interaction": active,
         "middleware": {
             "active": _interaction_is_active(state),
             "middleware_event_count": int(state.get("middleware_event_count", 0) or 0),
             "last_action_at": state.get("last_action_at"),
         },
+        "duplicate_module_names": duplicate_module_names,
         "governor_status": governor_status,
         "warnings": warnings,
     }
@@ -1108,9 +1200,11 @@ def _handle_finish_interaction(params: dict[str, Any]) -> dict[str, Any]:
     event_count = int(state.get("middleware_event_count", 0) or 0)
     agent_id = str(metadata.get("agent_id", "")).strip() if isinstance(metadata, dict) else ""
 
-    finish_params: dict[str, Any] = {"status": status}
+    finish_params: dict[str, Any] = {"status": status, "run_id": state.get("active_run_id")}
     if result_summary:
         finish_params["final_summary"] = result_summary
+    nexus_warnings: list[str] = []
+    auto_memory: dict[str, Any] = {"attempted": False, "recorded": False, "enabled": record_memory}
     try:
         governor_result = _call_governor("finish_run", finish_params)
     except Exception as exc:
@@ -1119,12 +1213,28 @@ def _handle_finish_interaction(params: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(governor_result, dict):
         return _error_result("component_error", "Governor finish_run returned invalid response.")
     if bool(governor_result.get("isError")):
+        structured = _structured_content(governor_result)
+        code = str(structured.get("error", "")).strip()
+        if code in {"no_current_run", "run_not_found", "run_not_active"}:
+            cleared = _clear_active_interaction(state)
+            _save_nexus_state(cleared)
+            nexus_warnings.append("governor run was already closed ({0}); nexus interaction state cleared".format(code))
+            payload = {
+                "finished": True,
+                "status": status,
+                "run_id": state.get("active_run_id"),
+                "governor": structured,
+                "auto_memory": auto_memory,
+                "nexus_warnings": nexus_warnings,
+            }
+            return _text_result(
+                "Finished interaction run {0} with status '{1}'.".format(payload["run_id"], status),
+                payload,
+            )
         return governor_result
 
     governor_payload = _structured_content(governor_result)
     run_id = str(governor_payload.get("run_id") or state.get("active_run_id") or "").strip()
-    nexus_warnings: list[str] = []
-    auto_memory: dict[str, Any] = {"attempted": False, "recorded": False, "enabled": record_memory}
 
     if record_memory and run_id:
         memory_params: dict[str, Any] = {
@@ -1153,6 +1263,27 @@ def _handle_finish_interaction(params: dict[str, Any]) -> dict[str, Any]:
         except Exception as exc:
             nexus_warnings.append("auto_memory_record failed: {0}: {1}".format(type(exc).__name__, exc))
 
+    decision_id = str(metadata.get("decision_id", "")).strip() if isinstance(metadata, dict) else ""
+    if decision_id:
+        try:
+            selection_rank = int(metadata.get("selection_rank", 1) or 1)
+        except (TypeError, ValueError):
+            selection_rank = 1
+        outcome = "followed" if selection_rank == 1 else "overridden"
+        outcome_params: dict[str, Any] = {"decisionId": decision_id, "outcome": outcome}
+        if metadata.get("selected_model_id") not in (None, ""):
+            outcome_params["selectedModelId"] = metadata.get("selected_model_id")
+        if metadata.get("selection_rank") not in (None, ""):
+            outcome_params["selectionRank"] = metadata.get("selection_rank")
+        if metadata.get("agent_used") not in (None, ""):
+            outcome_params["agentUsed"] = metadata.get("agent_used")
+        try:
+            router_result = _call_router("log_outcome", outcome_params)
+            if bool(router_result.get("isError")):
+                nexus_warnings.append("router.log_outcome failed: {0}".format(_result_error_text(router_result)))
+        except Exception as exc:
+            nexus_warnings.append("router.log_outcome failed: {0}".format(exc))
+
     cleared = _clear_active_interaction(state)
     _save_nexus_state(cleared)
     payload = {
@@ -1170,6 +1301,30 @@ def _handle_finish_interaction(params: dict[str, Any]) -> dict[str, Any]:
     )
 
 
+def _handle_reset_interaction(params: dict[str, Any]) -> dict[str, Any]:
+    try:
+        confirm = _parse_bool_param(params, "confirm", False)
+        abandon_run = _parse_bool_param(params, "abandon_run", False)
+    except ValueError as exc:
+        return _error_result("invalid_arguments", str(exc))
+    if not confirm:
+        return _error_result("confirmation_required", "reset_interaction requires confirm=true.")
+    state = _load_nexus_state()
+    payload: dict[str, Any] = {"reset": True, "active_run_id": None}
+    if abandon_run and _interaction_is_active(state):
+        try:
+            governor_result = _call_governor("reset_run", {"yes": True})
+        except Exception as exc:
+            return _error_result("component_error", "Governor reset_run failed: {0}".format(exc))
+        if not isinstance(governor_result, dict):
+            return _error_result("component_error", "Governor reset_run returned invalid response.")
+        if bool(governor_result.get("isError")):
+            return governor_result
+        payload["governor"] = _structured_content(governor_result)
+    _save_nexus_state(_clear_active_interaction(state))
+    return _text_result("Nexus interaction state reset.", payload)
+
+
 _NEXUS_SELF_HANDLERS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
     "doctor": _handle_status,
     "status": _handle_status,
@@ -1178,6 +1333,7 @@ _NEXUS_SELF_HANDLERS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
     "help": _handle_help,
     "start_interaction": _handle_start_interaction,
     "finish_interaction": _handle_finish_interaction,
+    "reset_interaction": _handle_reset_interaction,
 }
 
 
@@ -1277,10 +1433,7 @@ def nexus_gateway(args: dict[str, Any]) -> dict[str, Any]:
         )
 
     state = _load_nexus_state()
-    if _interaction_is_active(state):
-        state["last_action_at"] = _utc_now_iso()
-        _save_nexus_state(state)
-
+    mutated_state = False
     if _should_auto_record(action, namespace, state):
         warning = _auto_record_to_governor(
             namespace=namespace,
@@ -1292,7 +1445,25 @@ def nexus_gateway(args: dict[str, Any]) -> dict[str, Any]:
         )
         if warning:
             result = _append_nexus_warning(result, warning)
+        mutated_state = _interaction_is_active(state)
+    elif _interaction_is_active(state):
+        state["last_action_at"] = _utc_now_iso()
+        mutated_state = True
 
+    if namespace == "governor" and not bool(result.get("isError")) and _interaction_is_active(state):
+        structured = _structured_content(result)
+        affected_run_id = ""
+        if subaction == "finish_run":
+            affected_run_id = str(structured.get("run_id") or "").strip()
+        elif subaction == "reset_run":
+            affected_run_id = str(structured.get("active_run") or "").strip()
+        if affected_run_id and affected_run_id == str(state.get("active_run_id") or ""):
+            state = _clear_active_interaction(state)
+            result = _append_nexus_warning(result, "interaction state cleared: run finished/reset via direct governor call")
+            mutated_state = True
+
+    if mutated_state:
+        _save_nexus_state(state)
     return result
 
 
@@ -1343,7 +1514,7 @@ def handle_request(message: dict[str, Any]) -> None:
         _ok(
             request_id,
             {
-                "protocolVersion": requested or PROTOCOL_VERSION,
+                "protocolVersion": requested if requested in SUPPORTED_PROTOCOL_VERSIONS else PROTOCOL_VERSION,
                 "capabilities": {"tools": {"listChanged": False}},
                 "serverInfo": {
                     "name": SERVER_NAME,
@@ -1357,6 +1528,10 @@ def handle_request(message: dict[str, Any]) -> None:
                 ),
             },
         )
+        return
+
+    if method == "ping":
+        _ok(request_id, {})
         return
 
     if method == "shutdown":
@@ -1392,6 +1567,8 @@ def handle_request(message: dict[str, Any]) -> None:
 def main() -> int:
     global _SHOULD_EXIT
     _SHOULD_EXIT = False
+    if os.environ.get("AGENT_SUITE_SESSION_ID", "").strip() and not os.environ.get("THRIFT_SESSION_ID", "").strip():
+        os.environ["THRIFT_SESSION_ID"] = os.environ["AGENT_SUITE_SESSION_ID"].strip()
     for line in sys.stdin:
         line = line.strip()
         if not line:

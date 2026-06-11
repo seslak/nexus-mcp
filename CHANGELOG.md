@@ -1,5 +1,18 @@
 # Nexus MCP Changelog
 
+## 0.3.1 (2026-06-10)
+
+- C1/C2/C6: `finish_interaction` now self-heals stale `run_not_active` runs, middleware auto-recording skips backend diagnostics that should not count as progress, and file-window summaries now report returned line ranges correctly.
+- D3: Nexus state writes are now atomic and leave no temp-file residue after successful saves.
+
+## 0.3.0 (2026-06-10)
+
+- Added `nexus.reset_interaction`, read-only `nexus.status`, direct governor finish/reset state sync, and explicit run targeting for interaction finish.
+- Synced the public action catalogue with current Governor, Router, and Thrift surfaces and added live drift-guard tests for all three.
+- Added Thrift telemetry hash bridging into Governor auto-recording so later `governor.sync_thrift` imports skip Nexus-mirrored duplicates.
+- Added root-consistency and duplicate-module-name diagnostics plus protocol `ping` and supported-version negotiation.
+- Added optional router outcome logging from `start_interaction.metadata.decision_id` on finish.
+
 ## 0.2.7 (2026-06-05)
 
 - Exposed new Mnemo read-only import-UX action through Nexus:

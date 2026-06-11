@@ -186,7 +186,7 @@ def main() -> int:
                 proc.wait(timeout=5)
 
     assert init["result"]["serverInfo"]["name"] == "nexus"
-    assert init["result"]["serverInfo"]["version"] == "0.2.7"
+    assert init["result"]["serverInfo"]["version"] == "0.3.1"
     assert {tool["name"] for tool in tools_resp["result"]["tools"]} == {"nexus"}
     schema_enum = set(tools_resp["result"]["tools"][0]["inputSchema"]["properties"]["action"]["enum"])
     assert "mnemo.memory_group_discover" in schema_enum
